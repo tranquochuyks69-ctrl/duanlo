@@ -1,9 +1,0 @@
-{
-  "name": "blackpig-chinese-platform",
-  "version": "8.0.0",
-  "description": "BlackPig (黑猪学中文) — Full-Stack HSK 1–9 Learning Platform (PostgreSQL 16 + Fastify + FastAPI + FSRS-5)",
-  "scripts": {
-    "build": "python3 scripts/build_all.py",
-    "test": "node tests/fsrs_real.test.mjs && node tests/ai_redteam_and_eval.test.mjs && node tests/idb_migration_and_schema.test.mjs"
-  }
-}
