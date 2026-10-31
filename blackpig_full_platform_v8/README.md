@@ -1,0 +1,25 @@
+# BlackPig (黑猪学中文) — Full-Stack HSK 1–9 Platform (v8.0)
+
+## 1. Kiến trúc & Các bản sửa hạ tầng (`infra/`)
+- **`infra/docker-compose.10k-ccu.yml` & `infra/nginx.conf`**:
+  - Nginx chỉ mount thư mục build tĩnh `../dist/public:/usr/share/nginx/html:ro` (tuyệt đối không mount thư mục gốc `../`), chặn toàn bộ dotfiles và các đường dẫn nội bộ (`/backend`, `/infra`, `/migrations`, `/tests`, `/secrets`).
+  - Cấu hình đầy đủ TLS 1.2 / 1.3 trên cổng `443` (`ssl_certificate`, `HSTS`, `X-Content-Type-Options`) và redirect `301` từ cổng `80` sang `443`.
+  - PostgreSQL 16 bật `synchronous_commit=on`, `wal_level=replica`, `archive_mode=on`, `shared_preload_libraries='pg_stat_statements'`, đi kèm container `postgres-backup-wal` (`pgBackRest` mã hóa AES-256-CBC) và bản sao đọc `postgres-replica`.
+  - Sử dụng Docker `secrets` thay cho mật khẩu cứng trong biến môi trường.
+
+## 2. Cơ sở dữ liệu PostgreSQL & Hệ thống Migration có phiên bản (`migrations/` & `backend/schema_pg15.sql`)
+- **`migrations/001_core_auth_rbac.sql`**: Extensions (`pgcrypto`, `pg_trgm`, `citext`, `unaccent`, `pg_stat_statements`), hàm `immutable_unaccent`, tách role `blackpig_owner` và `blackpig_app` (`NOBYPASSRLS`), ràng buộc số điện thoại chuẩn `E.164`, hệ thống bảng RBAC (`roles`, `permissions`, `role_permissions`, `user_roles`, `user_devices`, `push_subscriptions`, `login_audit_logs`) và tuân thủ Nghị định 13/2023/NĐ-CP (`terms_versions`, `user_consents`, `data_privacy_requests`, `data_retention_policies`).
+- **`migrations/002_curriculum_lexicon_media.sql`**: Tách từ nhiều nghĩa sang bảng `vocab_senses` và bản dịch đa ngôn ngữ `vocab_sense_translations`, chiết tự và bộ thủ (`radicals`, `hanzi_components`), 26 chuyên đề nhiều-nhiều (`topics`, `vocab_topics`), bảng tài nguyên đa phương tiện kèm giấy phép SPDX (`media_assets`), lịch sử phiên bản nội dung (`content_revisions`), và chỉ mục GIN `pg_trgm` + `immutable_unaccent`.
+- **`migrations/003_fsrs_attempts_partitioning.sql`**: Bảng tham số FSRS-5 theo từng người dùng (`user_fsrs_params`), bảng `card_states` bỏ cột `ease` SM-2 cũ, thêm `scheduled_days`, `learning_step`, tối ưu `fillfactor = 80` cho cập nhật HOT; phân vùng (`PARTITION BY RANGE`) bảng `review_logs` và `lesson_attempts` từ 2025 đến 2030 kèm phân vùng `DEFAULT`, chỉ mục `BRIN` và bảng lưu trữ lạnh Parquet (`cold_storage_archives`); bổ sung `exam_attempts`, `speaking_attempts` và `achievements`.
+- **`migrations/004_ledger_commercial_social_ops.sql`**: Đặt `idempotency_key text NOT NULL` trên `ledger`, bổ sung trigger `prevent_append_only_mutation()` và thu hồi quyền `REVOKE UPDATE, DELETE` trên `ledger`, `review_logs`, `admin_audit_logs`; bảng số dư vật lý `balance_accounts` cập nhật cùng giao dịch kèm hàm đối soát ban đêm; đầy đủ nhóm bảng Thương mại (`subscription_plans`, `subscriptions`, `orders`, `payments`, `refunds`, `payment_webhook_logs`), Xã hội (`friendships`, `leagues`, `weekly_leaderboard_snapshots`), Vận hành & API (`admin_audit_logs`, `feature_flags`, `ab_experiments`, `content_reports`, `api_idempotency_keys`, `server_event_outbox`).
+- **`migrations/005_ai_privacy_rls_and_grants.sql`**: Bỏ hoàn toàn bảng `pitr_snapshots`; chọn `error_catalog` trong DB làm nguồn sự thật duy nhất; bảng `prompt_model_registry` quản lý phiên bản prompt & model (bỏ giá trị mặc định cứng `claude-3-5-haiku`); bảng `friend_memory` có hạn lưu `expires_at`, cột mã hóa `encrypted_fact` (`pgcrypto`) và hàm dọn cứng tự động; bật `ENABLE` + `FORCE ROW LEVEL SECURITY` trên toàn bộ 29 bảng dữ liệu người dùng.
+
+## 3. Dịch vụ Backend (`backend/`)
+- **`backend/ai_speech_service.py`**: Ứng dụng **FastAPI** hoàn chỉnh (`app = FastAPI(...)`), nạp `error_catalog` và `prompt_model_registry` từ PostgreSQL, chấm thanh điệu tiếng Trung bằng trích xuất $F_0$ chuẩn hóa Chao 5 bậc kết hợp **Dynamic Time Warping (DTW)**, và ghi nhận chi phí token/USD + độ trễ.
+- **`backend/auth_and_ledger.ts` & `backend/server_10k_ccu.ts`**: Sửa toàn bộ lệnh `SET LOCAL` sang `SELECT set_config('app.user_id', $1::text, true)`, kiểm tra chặt đầu vào (`validateReviewLogStrict` trả lỗi 422 thay vì ép kiểu ngầm `|| 1`, `|| 3`), ánh xạ mã chuỗi `external_key` (`v_1`), xác thực quyền Admin RBAC từ máy chủ (`verifyAdminRoleAndAuditServerSide`), và chấm nét viết chữ Hán theo hình học vector từng nét (`evaluateHanziStrokesVectorGeometry`).
+
+## 4. Lưu trữ Trình duyệt & Kiểm thử (`js/`, `tests/`, `scripts/`)
+- Đổi tên trung thực trên giao diện: **“Sao lưu cục bộ”**, **“Xuất file mã hóa (AES-256-GCM • PBKDF2 600.000 vòng)”**, **“Dọn bản ghi trùng cục bộ”**.
+- Không ghi nguyên khối `appState` hay ảnh đại diện vào `localStorage`; tách ảnh sang kho `media_blobs` trong IndexedDB v8 và đồng bộ đa tab bằng `navigator.locks` (Web Locks API) + `BroadcastChannel`.
+- Gỡ bỏ hoàn toàn công tắc Admin phía client (`?admin=1`, `#admin`, `Ctrl+Shift+A`); yêu cầu xác thực phiên RBAC từ máy chủ (`/api/v1/admin/verify`).
+- Chạy kiểm thử: `npm test` (chạy 3 bộ test Node/Vitest) và `pg_prove -d blackpig_prod tests/pgtap_schema_and_rls.sql`.
